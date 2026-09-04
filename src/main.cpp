@@ -207,7 +207,7 @@ void publish_heartbeat() {
     payload += ",\"type\":";
     payload += "\"heartbeat\"";
     payload += ",\"device_type\":";
-    payload += "\"ESP32 C#\"";
+    payload += "\"ESP32 C3\"";
     payload += ",\"uptime\":";
     payload += uptime;
     payload += "}";
