@@ -7,6 +7,10 @@
 
 #define LORA_FREQ 433E6
 
+#define HEARTBEAT_INTERVAL_MINUTES 90                            // interval between heartbeat messages
+#define HEARTBEAT_INTERVAL_MS (HEARTBEAT_INTERVAL_MINUTES * 60000UL)
+
+
 HardwareSerial hs(1); // UART2
 SdsDustSensor sds(hs); //  additional parameters: retryDelayMs and maxRetriesNotAvailable
 
@@ -14,16 +18,15 @@ const int MINUTE = 60000;
 const int WAKEUP_WORKING_TIME = MINUTE; // 30 seconds.
 const int MEASUREMENT_INTERVAL = 2 * MINUTE;
 
-void publish_alive();
-void publish_pm_data(float pm1p0, float pm2p5, float pm4p0, float pm10p0);
-void publish_temp(float temp, float humidity, float gasResistance);
+void publish_heartbeat();
+void publish_pm_data(float pm1p0, float pm2p5, float pm4p0, float pm10p0, float temp, float humidity, float gasResistance);
 void sendMessage(String outgoing);
 
 unsigned long lastRun = 0;
 
 char ssid[23];
-char sMacAddr[18];
 unsigned char sensorName[32];
+static unsigned long lastHeartbeatMillis = 0;
 
 SensirionI2CSen5x sen5x;
 
@@ -34,12 +37,10 @@ void setup() {
     // Get deviceId
     uint8_t macAddr[6];
     snprintf(ssid, 23, "MCUDEVICE-%llX", ESP.getEfuseMac());
-    WiFi.macAddress(macAddr);   // The MAC address is stored in the macAddr array.
-    snprintf(sMacAddr, 18, "%02x:%02x:%02x:%02x:%02x:%02x", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
-    Serial.println(ssid);
-    Serial.println(sMacAddr);
 
     Wire.begin(SDA, SCL);
+
+    lastHeartbeatMillis = millis();
 
     delay(1000);
 
@@ -114,7 +115,13 @@ void setup() {
         Serial.println(errorMessage);
     }
 
-    publish_alive();
+    LoRa.setPreambleLength(8);
+    LoRa.setSpreadingFactor(7);
+    LoRa.setSignalBandwidth(125E3);
+    LoRa.setCodingRate4(5);
+    LoRa.setSyncWord(0x12);
+
+    publish_heartbeat();
 }
 
 void loop() {
@@ -143,78 +150,68 @@ void loop() {
         Serial.println(errorMessage);
     } else {
         if (!isnan(massConcentrationPm1p0) && !isnan(ambientTemperature)) {
-            publish_pm_data(massConcentrationPm1p0, massConcentrationPm2p5, massConcentrationPm4p0, massConcentrationPm10p0);
-            publish_temp(ambientTemperature, ambientHumidity, vocIndex);
+            delay(20000);
+            publish_pm_data(massConcentrationPm1p0, massConcentrationPm2p5, massConcentrationPm4p0, massConcentrationPm10p0, ambientTemperature, ambientHumidity, vocIndex);
         }
     }
 
-    delay(60000);
+    if (millis() - lastHeartbeatMillis >= HEARTBEAT_INTERVAL_MS) {
+        // Wait a while because LoRa can't send 2 messages straight to each other.
+        delay(1000);
+        publish_heartbeat();
+        lastHeartbeatMillis = millis();
+    }
+
+    delay(40000);
 }
 
-void publish_pm_data(float pm1p0, float pm2p5, float pm4p0, float pm10p0) {
+void publish_pm_data(float pm1p0, float pm2p5, float pm4p0, float pm10p0, float temp, float humidity, float gasResistance) {
 
     String payload = "";
     payload += "{\"PM1_0\":";
-    payload += String(pm1p0);
+    payload += pm1p0;
     payload += ",\"PM2_5\":";
-    payload += String(pm2p5);
+    payload += pm2p5;
     payload += ",\"PM4_0\":";
-    payload += String(pm4p0);
+    payload += pm4p0;
     payload += ",\"PM10\":";
-    payload += String(pm10p0);
-    payload += ",\"sensor\":";
-    payload += (char *) sensorName;
-    payload += ",\"device\":";
-    payload += "\"";
-    payload += ssid;
-    payload += "\"";
-    payload += ",\"mac\":";
-    payload += "\"";
-    payload += sMacAddr;
-    payload += "\"";
-    payload += "}";
-    sendMessage(payload);
-}
-
-void publish_temp(float temp, float humidity, float gasResistance) {
-
-    String payload = "";
-    payload += "{\"temperature\":";
-    payload += String(temp);
+    payload += pm10p0;
+    payload += ",\"temperature\":";
+    payload += temp;
     payload += ",\"humidity\":";
-    payload += String(humidity);
+    payload += humidity;
     payload += ",\"gas_resistance\":";
-    payload += String(gasResistance);
+    payload += gasResistance;
     payload += ",\"sensor\":";
+    payload += "\"";
     payload += (char *) sensorName;
+    payload += "\"";
     payload += ",\"device\":";
     payload += "\"";
     payload += ssid;
-    payload += "\"";
-    payload += ",\"mac\":";
-    payload += "\"";
-    payload += sMacAddr;
     payload += "\"";
     payload += "}";
     sendMessage(payload);
 }
 
-void publish_alive() {
+void publish_heartbeat() {
 
-  // maximum message length 128 Byte
-  String payload = "";
-  payload += "{\"device\":";
-  payload += "\"";
-  payload += ssid;
-  payload += "\"";
-  payload += ",\"type\":";
-  payload += "\"iamalive\"";
-  payload += ",\"mac\":";
-  payload += "\"";
-  payload += sMacAddr;
-  payload += "\"";
-  payload += "}";
-  sendMessage(payload);
+    const int uptime = static_cast<int>(millis() / 60000UL);
+
+    // maximum message length 128 Byte
+    String payload = "";
+    payload += "{\"device\":";
+    payload += "\"";
+    payload += ssid;
+    payload += "\"";
+    payload += ",\"type\":";
+    payload += "\"heartbeat\"";
+    payload += ",\"device_type\":";
+    payload += "\"ESP32 C#\"";
+    payload += ",\"uptime\":";
+    payload += uptime;
+    payload += "}";
+    sendMessage(payload);
 }
 
 void sendMessage(String outgoing) {
